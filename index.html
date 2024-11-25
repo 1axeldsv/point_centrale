@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Point Central de Rencontre</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .form-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .person-form {
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #map {
+            height: 400px;
+            margin-top: 20px;
+            border-radius: 8px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Point Central de Rencontre</h1>
+    
+    <div class="form-container">
+        <div class="person-form">
+            <h2>Personne 1</h2>
+            <input type="text" id="address1" placeholder="Adresse personne 1">
+            <select id="transport1">
+                <option value="driving">Voiture</option>
+                <option value="bicycling">Vélo</option>
+                <option value="transit">Transport en commun</option>
+                <option value="walking">À pied</option>
+            </select>
+        </div>
+        
+        <div class="person-form">
+            <h2>Personne 2</h2>
+            <input type="text" id="address2" placeholder="Adresse personne 2">
+            <select id="transport2">
+                <option value="driving">Voiture</option>
+                <option value="bicycling">Vélo</option>
+                <option value="transit">Transport en commun</option>
+                <option value="walking">À pied</option>
+            </select>
+        </div>
+    </div>
+
+    <button onclick="findMidPoint()">Trouver le point de rencontre</button>
+    
+    <div id="map"></div>
+    <div id="results"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>
+        let map;
+        let markers = [];
+        let midMarker;
+
+        // Initialiser la carte
+        function initMap() {
+            map = L.map('map').setView([48.866667, 2.333333], 11);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+        }
+
+        async function geocodeAddress(address) {
+            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`);
+            const data = await response.json();
+            if (data.length > 0) {
+                return {
+                    lat: parseFloat(data[0].lat),
+                    lng: parseFloat(data[0].lon)
+                };
+            }
+            throw new Error('Adresse non trouvée');
+        }
+
+        async function findMidPoint() {
+            const address1 = document.getElementById('address1').value;
+            const address2 = document.getElementById('address2').value;
+            const transport1 = document.getElementById('transport1').value;
+            const transport2 = document.getElementById('transport2').value;
+
+            try {
+                // Nettoyer la carte
+                markers.forEach(marker => marker.remove());
+                markers = [];
+                if (midMarker) midMarker.remove();
+
+                // Obtenir les coordonnées
+                const pos1 = await geocodeAddress(address1);
+                const pos2 = await geocodeAddress(address2);
+
+                // Ajouter les marqueurs
+                markers.push(L.marker([pos1.lat, pos1.lng]).addTo(map)
+                    .bindPopup('Personne 1'));
+                markers.push(L.marker([pos2.lat, pos2.lng]).addTo(map)
+                    .bindPopup('Personne 2'));
+
+                // Calculer le point central
+                const midPoint = {
+                    lat: (pos1.lat + pos2.lat) / 2,
+                    lng: (pos1.lng + pos2.lng) / 2
+                };
+
+                // Ajouter le marqueur du point central
+                midMarker = L.marker([midPoint.lat, midPoint.lng], {
+                    icon: L.divIcon({
+                        className: 'mid-point',
+                        html: '🎯',
+                        iconSize: [25, 25]
+                    })
+                }).addTo(map);
+
+                // Ajuster la vue de la carte
+                const bounds = L.latLngBounds([
+                    [pos1.lat, pos1.lng],
+                    [pos2.lat, pos2.lng]
+                ]);
+                map.fitBounds(bounds, { padding: [50, 50] });
+
+                // Calculer et afficher les temps de trajet approximatifs
+                const distance1 = calculateDistance(pos1, midPoint);
+                const distance2 = calculateDistance(pos2, midPoint);
+                
+                const times1 = estimateTime(distance1, transport1);
+                const times2 = estimateTime(distance2, transport2);
+
+                document.getElementById('results').innerHTML = `
+                    <h3>Temps de trajet estimés :</h3>
+                    <p>Personne 1 (${getTransportName(transport1)}) : ${times1}</p>
+                    <p>Personne 2 (${getTransportName(transport2)}) : ${times2}</p>
+                `;
+
+            } catch (error) {
+                alert('Erreur : ' + error.message);
+            }
+        }
+
+        function calculateDistance(point1, point2) {
+            const R = 6371; // Rayon de la Terre en km
+            const dLat = (point2.lat - point1.lat) * Math.PI / 180;
+            const dLon = (point2.lng - point1.lng) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(point1.lat * Math.PI / 180) * Math.cos(point2.lat * Math.PI / 180) *
+                    Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; // Distance en km
+        }
+
+        function estimateTime(distance, transport) {
+            let speed;
+            switch(transport) {
+                case 'driving':
+                    speed = 30; // km/h en ville
+                    break;
+                case 'bicycling':
+                    speed = 15;
+                    break;
+                case 'transit':
+                    speed = 20;
+                    break;
+                case 'walking':
+                    speed = 4.5;
+                    break;
+            }
+            const time = (distance / speed) * 60; // temps en minutes
+            return Math.round(time) + ' minutes';
+        }
+
+        function getTransportName(transport) {
+            switch(transport) {
+                case 'driving': return 'Voiture';
+                case 'bicycling': return 'Vélo';
+                case 'transit': return 'Transport en commun';
+                case 'walking': return 'À pied';
+            }
+        }
+
+        // Initialiser la carte au chargement
+        window.onload = initMap;
+    </script>
+</body>
+</html>
