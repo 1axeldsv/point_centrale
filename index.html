@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Point Central de Rencontre</title>
+    <title>Point Central de Rencontre (Temps Égal)</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
     <style>
         body {
@@ -44,7 +44,7 @@
             background-color: #45a049;
         }
         #map {
-            height: 400px;
+            height: 500px;
             margin-top: 20px;
             border-radius: 8px;
         }
@@ -54,20 +54,25 @@
             border: 1px solid #ccc;
             border-radius: 8px;
         }
+        #loading {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 18px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
-    <h1>Point Central de Rencontre</h1>
+    <h1>Point Central de Rencontre (Temps Égal)</h1>
     
     <div class="form-container">
         <div class="person-form">
             <h2>Personne 1</h2>
             <input type="text" id="address1" placeholder="Adresse personne 1">
             <select id="transport1">
-                <option value="driving">Voiture</option>
-                <option value="bicycling">Vélo</option>
-                <option value="transit">Transport en commun</option>
-                <option value="walking">À pied</option>
+                <option value="driving-car">Voiture</option>
+                <option value="cycling-regular">Vélo</option>
+                <option value="foot-walking">À pied</option>
             </select>
         </div>
         
@@ -75,26 +80,24 @@
             <h2>Personne 2</h2>
             <input type="text" id="address2" placeholder="Adresse personne 2">
             <select id="transport2">
-                <option value="driving">Voiture</option>
-                <option value="bicycling">Vélo</option>
-                <option value="transit">Transport en commun</option>
-                <option value="walking">À pied</option>
+                <option value="driving-car">Voiture</option>
+                <option value="cycling-regular">Vélo</option>
+                <option value="foot-walking">À pied</option>
             </select>
         </div>
     </div>
 
-    <button onclick="findMidPoint()">Trouver le point de rencontre</button>
+    <button onclick="findEqualTimeMeetingPoint()">Trouver le point de rencontre à temps égal</button>
     
+    <div id="loading" style="display:none;">Calcul en cours...</div>
     <div id="map"></div>
     <div id="results"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <script>
-        let map;
-        let markers = [];
-        let midMarker;
+        const ORS_API_KEY = '5b3ce3597851110001cf6248cd5f4bce76064c64886317fcfb53af33'; // Remplacer par votre clé OpenRouteService
+        let map, markers = [], meetingMarker;
 
-        // Initialiser la carte
         function initMap() {
             map = L.map('map').setView([48.866667, 2.333333], 11);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -109,42 +112,61 @@
             if (data.length > 0) {
                 return {
                     lat: parseFloat(data[0].lat),
-                    lng: parseFloat(data[0].lon)
+                    lon: parseFloat(data[0].lon)
                 };
             }
             throw new Error('Adresse non trouvée');
         }
 
-        async function findMidPoint() {
+        async function calculateRoute(start, end, mode) {
+            const body = {
+                coordinates: [[start.lon, start.lat], [end.lon, end.lat]],
+                metrics: ['duration'],
+                units: 'km'
+            };
+
+            const response = await fetch(`https://api.openrouteservice.org/v2/directions/${mode}`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+                    'Content-Type': 'application/json',
+                    'Authorization': ORS_API_KEY
+                },
+                body: JSON.stringify(body)
+            });
+
+            const data = await response.json();
+            return data.routes[0].summary.duration / 60; // en minutes
+        }
+
+        async function findEqualTimeMeetingPoint() {
             const address1 = document.getElementById('address1').value;
             const address2 = document.getElementById('address2').value;
             const transport1 = document.getElementById('transport1').value;
             const transport2 = document.getElementById('transport2').value;
 
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').innerHTML = '';
+
             try {
                 // Nettoyer la carte
                 markers.forEach(marker => marker.remove());
                 markers = [];
-                if (midMarker) midMarker.remove();
+                if (meetingMarker) meetingMarker.remove();
 
-                // Obtenir les coordonnées
+                // Geocoder les adresses
                 const pos1 = await geocodeAddress(address1);
                 const pos2 = await geocodeAddress(address2);
 
-                // Ajouter les marqueurs
-                markers.push(L.marker([pos1.lat, pos1.lng]).addTo(map)
-                    .bindPopup('Personne 1'));
-                markers.push(L.marker([pos2.lat, pos2.lng]).addTo(map)
-                    .bindPopup('Personne 2'));
+                // Ajouter les marqueurs initiaux
+                markers.push(L.marker([pos1.lat, pos1.lon]).addTo(map).bindPopup('Personne 1'));
+                markers.push(L.marker([pos2.lat, pos2.lon]).addTo(map).bindPopup('Personne 2'));
 
-                // Calculer le point central
-                const midPoint = {
-                    lat: (pos1.lat + pos2.lat) / 2,
-                    lng: (pos1.lng + pos2.lng) / 2
-                };
+                // Recherche du point de rencontre par approximations successives
+                const midPoint = await findOptimalMeetingPoint(pos1, pos2, transport1, transport2);
 
-                // Ajouter le marqueur du point central
-                midMarker = L.marker([midPoint.lat, midPoint.lng], {
+                // Ajouter le marqueur du point de rencontre
+                meetingMarker = L.marker([midPoint.lat, midPoint.lon], {
                     icon: L.divIcon({
                         className: 'mid-point',
                         html: '🎯',
@@ -153,71 +175,72 @@
                 }).addTo(map);
 
                 // Ajuster la vue de la carte
-                const bounds = L.latLngBounds([
-                    [pos1.lat, pos1.lng],
-                    [pos2.lat, pos2.lng]
-                ]);
-                map.fitBounds(bounds, { padding: [50, 50] });
+                map.fitBounds([
+                    [pos1.lat, pos1.lon],
+                    [pos2.lat, pos2.lon],
+                    [midPoint.lat, midPoint.lon]
+                ], { padding: [50, 50] });
 
-                // Calculer et afficher les temps de trajet approximatifs
-                const distance1 = calculateDistance(pos1, midPoint);
-                const distance2 = calculateDistance(pos2, midPoint);
-                
-                const times1 = estimateTime(distance1, transport1);
-                const times2 = estimateTime(distance2, transport2);
-
+                // Afficher les résultats
                 document.getElementById('results').innerHTML = `
-                    <h3>Temps de trajet estimés :</h3>
-                    <p>Personne 1 (${getTransportName(transport1)}) : ${times1}</p>
-                    <p>Personne 2 (${getTransportName(transport2)}) : ${times2}</p>
+                    <h3>Point de rencontre à temps égal</h3>
+                    <p>Latitude : ${midPoint.lat.toFixed(6)}</p>
+                    <p>Longitude : ${midPoint.lon.toFixed(6)}</p>
                 `;
 
+                document.getElementById('loading').style.display = 'none';
+
             } catch (error) {
+                document.getElementById('loading').style.display = 'none';
                 alert('Erreur : ' + error.message);
             }
         }
 
-        function calculateDistance(point1, point2) {
-            const R = 6371; // Rayon de la Terre en km
-            const dLat = (point2.lat - point1.lat) * Math.PI / 180;
-            const dLon = (point2.lng - point1.lng) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                    Math.cos(point1.lat * Math.PI / 180) * Math.cos(point2.lat * Math.PI / 180) *
-                    Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            return R * c; // Distance en km
-        }
+        async function findOptimalMeetingPoint(pos1, pos2, transport1, transport2) {
+            // Approximation initiale : point médian
+            let currentPoint = {
+                lat: (pos1.lat + pos2.lat) / 2,
+                lon: (pos1.lon + pos2.lon) / 2
+            };
 
-        function estimateTime(distance, transport) {
-            let speed;
-            switch(transport) {
-                case 'driving':
-                    speed = 30; // km/h en ville
-                    break;
-                case 'bicycling':
-                    speed = 15;
-                    break;
-                case 'transit':
-                    speed = 20;
-                    break;
-                case 'walking':
-                    speed = 4.5;
-                    break;
+            const precision = 0.0001; // précision des coordonnées
+            const maxIterations = 20;
+            let iteration = 0;
+
+            while (iteration < maxIterations) {
+                // Calculer les temps de trajet aux points adjacents
+                const routes = await Promise.all([
+                    calculateRoute(pos1, currentPoint, transport1),
+                    calculateRoute(pos2, currentPoint, transport2),
+                    calculateRoute(pos1, {lat: currentPoint.lat + precision, lon: currentPoint.lon}, transport1),
+                    calculateRoute(pos2, {lat: currentPoint.lat + precision, lon: currentPoint.lon}, transport2),
+                    calculateRoute(pos1, {lat: currentPoint.lat, lon: currentPoint.lon + precision}, transport1),
+                    calculateRoute(pos2, {lat: currentPoint.lat, lon: currentPoint.lon + precision}, transport2)
+                ]);
+
+                const [time1, time2, timeLatPlus, timeLat2Plus, timeLonPlus, timeLon2Plus] = routes;
+
+                // Vérifier si les temps sont suffisamment proches
+                if (Math.abs(time1 - time2) < 1) {
+                    return currentPoint;
+                }
+
+                // Ajuster le point en fonction des différences de temps
+                const gradientLat = (timeLatPlus - time1) / precision;
+                const gradientLon = (timeLonPlus - time1) / precision;
+
+                // Mise à jour du point avec un petit pas
+                currentPoint = {
+                    lat: currentPoint.lat - 0.01 * (time1 - time2) * gradientLat,
+                    lon: currentPoint.lon - 0.01 * (time1 - time2) * gradientLon
+                };
+
+                iteration++;
             }
-            const time = (distance / speed) * 60; // temps en minutes
-            return Math.round(time) + ' minutes';
+
+            return currentPoint;
         }
 
-        function getTransportName(transport) {
-            switch(transport) {
-                case 'driving': return 'Voiture';
-                case 'bicycling': return 'Vélo';
-                case 'transit': return 'Transport en commun';
-                case 'walking': return 'À pied';
-            }
-        }
-
-        // Initialiser la carte au chargement
         window.onload = initMap;
     </script>
 </body>
